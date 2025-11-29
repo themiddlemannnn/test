@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Simple Line Game</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #222; /* Dark background behind canvas */
+            overflow: hidden;
+            font-family: sans-serif;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        #gameCanvas {
+            display: block;
+            background-color: #ffffff;
+            position: absolute; /* Fix position to ensure it covers screen */
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* --- UI LAYER (Instructions) --- */
+        #ui {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            text-align: center;
+            color: #555;
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        /* --- CONTROLS LAYER --- */
+        #controls-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 10; 
+        }
+
+        /* Joystick (Left) */
+        #joystick-zone {
+            position: absolute;
+            bottom: 40px;
+            left: 40px;
+            width: 140px;
+            height: 140px;
+            pointer-events: auto; 
+        }
+
+        #joystick-base {
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.1);
+            border: 2px solid rgba(0, 0, 0, 0.2);
+            border-radius: 50%;
+            position: relative;
+            box-sizing: border-box;
+        }
+
+        #joystick-stick {
+            width: 50px;
+            height: 50px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+
+        /* Jump Button (Right) */
+        #jump-btn {
+            position: absolute;
+            bottom: 60px;
+            right: 60px;
+            width: 90px;
+            height: 90px;
+            background: rgba(200, 50, 50, 0.4);
+            border: 4px solid rgba(200, 50, 50, 0.6);
+            border-radius: 50%;
+            pointer-events: auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 32px;
+            font-weight: bold;
+            font-family: monospace;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+
+        #jump-btn:active {
+            background: rgba(200, 50, 50, 0.7);
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h3>Red Box Runner</h3>
+        <p>Keyboard: Arrows to Move, Space to Jump</p>
+    </div>
+
+    <!-- Controls Layer -->
+    <div id="controls-layer">
+        <div id="joystick-zone">
+            <div id="joystick-base">
+                <div id="joystick-stick"></div>
+            </div>
+        </div>
+        <div id="jump-btn">A</div>
+    </div>
+
+    <!-- The Game Area -->
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // --- Setup ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- Sprites ---
+        const sprites = {
+            idle: {
+                img: new Image(),
+                src: 'idle.png',
+                totalFrames: 12,
+                sheetWidth: 8640,
+                sheetHeight: 720,
+                get frameWidth() { return this.sheetWidth / this.totalFrames; },
+                get frameHeight() { return this.sheetHeight; },
+                animationSpeed: 0.08 
+            },
+            run: {
+                img: new Image(),
+                src: 'run.png',
+                totalFrames: 4,
+                sheetWidth: 2880,
+                sheetHeight: 720,
+                get frameWidth() { return this.sheetWidth / this.totalFrames; },
+                get frameHeight() { return this.sheetHeight; },
+                animationSpeed: 0.1 
+            }
+        };
+
+        // Start loading
+        sprites.idle.img.src = sprites.idle.src;
+        sprites.run.img.src = sprites.run.src;
+
+        // --- Constants ---
+        const GRAVITY = 2500;
+        const JUMP_FORCE = -1200;
+
+        // --- Game Variables ---
+        let gameWidth = window.innerWidth;
+        let gameHeight = window.innerHeight;
+        
+        const player = {
+            x: 0,
+            y: 0,
+            width: 100, 
+            height: 100,
+            color: 'red',
+            speed: 400,
+            vx: 0,
+            vy: 0,
+            facingRight: true,
+            onGround: false,
+            animTimer: 0,
+            currentFrame: 0,
+            currentState: 'idle'
+        };
+
+        const ground = {
+            y: 0,
+            height: 5,
+            color: 'black'
+        };
+
+        // --- Input State ---
+        const keys = { ArrowRight: false, ArrowLeft: false };
+        let analogInputX = 0;
+
+        // --- Resizing ---
+        function resize() {
+            gameWidth = window.innerWidth;
+            gameHeight = window.innerHeight;
+            
+            canvas.width = gameWidth;
+            canvas.height = gameHeight;
+
+            ground.y = gameHeight * 0.75;
+            
+            // Keep player safe if screen changes
+            if (player.y > ground.y - player.height) {
+                player.y = ground.y - player.height;
+                player.onGround = true;
+                player.vy = 0;
+            }
+        }
+        window.addEventListener('resize', resize);
+        
+        // Initial setup
+        resize();
+        player.x = (gameWidth / 2) - (player.width / 2);
+        player.y = ground.y - player.height;
+
+        // --- Inputs ---
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'ArrowUp') performJump();
+            if (keys.hasOwnProperty(e.code)) keys[e.code] = true;
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.code)) keys[e.code] = false;
+        });
+
+        // Joystick Logic
+        const joystickZone = document.getElementById('joystick-zone');
+        const joystickStick = document.getElementById('joystick-stick');
+        let joystickCenter = { x: 0, y: 0 };
+        const maxStickDistance = 45;
+
+        joystickZone.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const rect = joystickZone.getBoundingClientRect();
+            joystickCenter.x = rect.left + rect.width / 2;
+            joystickCenter.y = rect.top + rect.height / 2;
+            updateJoystick(e.changedTouches[0]);
+        }, {passive: false});
+
+        joystickZone.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            for(let i=0; i<e.changedTouches.length; i++) {
+                updateJoystick(e.changedTouches[i]);
+            }
+        }, {passive: false});
+
+        joystickZone.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            analogInputX = 0;
+            joystickStick.style.transform = `translate(-50%, -50%)`;
+        });
+
+        function updateJoystick(touch) {
+            const dx = touch.clientX - joystickCenter.x;
+            const dy = touch.clientY - joystickCenter.y;
+            const distance = Math.min(Math.sqrt(dx*dx + dy*dy), maxStickDistance);
+            const angle = Math.atan2(dy, dx);
+            const moveX = Math.cos(angle) * distance;
+            const moveY = Math.sin(angle) * distance;
+            
+            joystickStick.style.transform = `translate(calc(-50% + ${moveX}px), calc(-50% + ${moveY}px))`;
+            analogInputX = moveX / maxStickDistance;
+        }
+
+        // Jump Button Logic
+        const jumpBtn = document.getElementById('jump-btn');
+        jumpBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            performJump();
+        }, {passive: false});
+
+        function performJump() {
+            if (player.onGround) {
+                player.vy = JUMP_FORCE;
+                player.onGround = false;
+            }
+        }
+
+        // --- Main Game Logic ---
+        function update(deltaTime) {
+            // Movement
+            let direction = 0;
+            if (keys.ArrowRight) direction += 1;
+            if (keys.ArrowLeft) direction -= 1;
+            
+            let finalInputX = direction;
+            if (Math.abs(analogInputX) > 0.1) finalInputX = analogInputX;
+
+            if (finalInputX > 0) player.facingRight = true;
+            if (finalInputX < 0) player.facingRight = false;
+
+            player.vx = finalInputX * player.speed;
+            player.x += player.vx * deltaTime;
+            player.vy += GRAVITY * deltaTime;
+            player.y += player.vy * deltaTime;
+
+            // Ground Collision
+            if (player.y + player.height > ground.y) {
+                player.y = ground.y - player.height;
+                player.vy = 0;
+                player.onGround = true;
+            } else {
+                player.onGround = false;
+            }
+
+            // Wall Collision
+            if (player.x < 0) player.x = 0;
+            if (player.x + player.width > gameWidth) player.x = gameWidth - player.width;
+
+            // Animation Logic
+            if (!player.onGround) {
+                player.currentState = 'idle';
+            } else if (Math.abs(player.vx) > 10) {
+                player.currentState = 'run';
+            } else {
+                player.currentState = 'idle';
+            }
+
+            const currentSprite = sprites[player.currentState];
+            player.animTimer += deltaTime;
+            if (player.animTimer >= currentSprite.animationSpeed) {
+                player.currentFrame++;
+                player.animTimer = 0;
+            }
+            if (player.currentFrame >= currentSprite.totalFrames) {
+                player.currentFrame = 0;
+            }
+        }
+
+        function draw() {
+            // 1. Force Clean Background
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, gameWidth, gameHeight);
+
+            // 2. Draw Ground
+            ctx.fillStyle = ground.color;
+            ctx.fillRect(0, ground.y, gameWidth, ground.height);
+
+            // 3. Draw Player
+            const activeSprite = sprites[player.currentState];
+            
+            // Check if image is ready to draw
+            const isImageLoaded = activeSprite.img.complete && activeSprite.img.naturalHeight !== 0;
+
+            if (isImageLoaded) {
+                // --- SPRITE MODE ---
+                ctx.save();
+                
+                // Pivot at feet
+                const pivotX = player.x + player.width / 2;
+                const pivotY = player.y + player.height;
+                ctx.translate(pivotX, pivotY);
+
+                // Flip
+                if (!player.facingRight) ctx.scale(-1, 1);
+
+                // Dimensions
+                const displayHeight = 200; 
+                const verticalOffset = 47; 
+                const aspectRatio = activeSprite.frameWidth / activeSprite.frameHeight;
+                const displayWidth = displayHeight * aspectRatio;
+                const sx = player.currentFrame * activeSprite.frameWidth;
+                
+                ctx.drawImage(
+                    activeSprite.img, 
+                    sx, 0, activeSprite.frameWidth, activeSprite.frameHeight, 
+                    -displayWidth / 2, -displayHeight + verticalOffset, displayWidth, displayHeight
+                );
+
+                ctx.restore();
+            } else {
+                // --- FALLBACK RED BOX MODE ---
+                // We do NOT use save/restore or translations here to ensure stability
+                ctx.fillStyle = player.color;
+                ctx.fillRect(player.x, player.y, player.width, player.height);
+                
+                // Optional: Draw a line to show facing direction
+                ctx.fillStyle = 'black';
+                if (player.facingRight) {
+                     ctx.fillRect(player.x + player.width - 10, player.y + 10, 10, 10);
+                } else {
+                     ctx.fillRect(player.x, player.y + 10, 10, 10);
+                }
+            }
+            
+            // 4. Ground Markers (Visual Aid)
+            ctx.fillStyle = '#ccc';
+            for(let i = 0; i < gameWidth; i+= 200) {
+                ctx.fillRect(i, ground.y + 10, 5, 20);
+            }
+        }
+
+        let lastTime = 0;
+        function loop(timestamp) {
+            const deltaTime = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+
+            // Cap delta time to prevent glitches on first frame or tab switch
+            if (deltaTime < 0.1) {
+                update(deltaTime);
+            }
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        // Start Loop
+        requestAnimationFrame(loop);
+
+    </script>
+</body>
+</html>
